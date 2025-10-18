@@ -1,7 +1,5 @@
-# app.py — Streamlit + matplotlib + Twelve Data
+# app.py — Streamlit + Twelve Data + matplotlib (ilman CSV-latausta)
 import os
-import io
-import math
 import time
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
@@ -28,6 +26,12 @@ SESSION.headers.update({
     "Connection": "keep-alive",
 })
 
+# ---------- API-avain Streamlitin Secretsista ----------
+API_KEY = st.secrets.get("TWELVEDATA_API_KEY")
+if not API_KEY:
+    st.error("⚠️ Twelve Data API Key puuttuu! Lisää se Streamlit 'Secrets' -asetuksiin.")
+    st.stop()
+
 # ---------- Aikajaksot ----------
 PERIODS = {
     "1kk": dict(months=1),
@@ -47,14 +51,11 @@ def compute_start_end(label: str):
     else:
         spec = PERIODS[label]
         days = (spec.get("months", 0) * 30) + (spec.get("years", 0) * 365)
-        start = now - timedelta(days=days + 7)  # pieni puskuri
+        start = now - timedelta(days=days + 7)
     return start.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
 
 # ---------- Twelve Data haku ----------
-def fetch_td_series(symbol: str, start_date: str, end_date: str, interval="1day", apikey: str = "") -> pd.Series:
-    if not apikey:
-        return pd.Series(dtype=float)
-
+def fetch_td_series(symbol: str, start_date: str, end_date: str, interval="1day") -> pd.Series:
     url = (
         "https://api.twelvedata.com/time_series"
         f"?symbol={quote_plus(symbol)}"
@@ -62,7 +63,7 @@ def fetch_td_series(symbol: str, start_date: str, end_date: str, interval="1day"
         f"&start_date={start_date}"
         f"&end_date={end_date}"
         f"&order=ASC&outputsize=5000"
-        f"&apikey={quote_plus(apikey)}"
+        f"&apikey={quote_plus(API_KEY)}"
     )
     time.sleep(0.3)
     resp = SESSION.get(url, timeout=20)
@@ -80,59 +81,25 @@ def fetch_td_series(symbol: str, start_date: str, end_date: str, interval="1day"
     df["Date"] = pd.to_datetime(df["datetime"], errors="coerce")
     df["Close"] = pd.to_numeric(df["close"], errors="coerce")
     df = df.dropna(subset=["Date", "Close"]).set_index("Date").sort_index()
-    s = df["Close"].astype(float)
-    return s
+    return df["Close"]
 
-# ---------- UI ----------
-# Lue oma CSV (valinnainen)
-default_csv = "tickers_base.csv"
-csv_file = st.file_uploader("Lataa oma CSV (symbol,name,exchange,country,asset_class,currency,notes)", type=["csv"])
-if csv_file:
-    df_list = pd.read_csv(csv_file)
-elif os.path.exists(default_csv):
-    df_list = pd.read_csv(default_csv)
-else:
-    df_list = pd.DataFrame({
-        "symbol": ["NOKIA.HE","SAMPO.HE","ELISA.HE","AAPL","MSFT","SPY"],
-        "name": ["Nokia","Sampo","Elisa","Apple","Microsoft","SPDR S&P 500 ETF"],
-        "exchange": ["Nasdaq Helsinki","Nasdaq Helsinki","Nasdaq Helsinki","NASDAQ","NASDAQ","NYSE Arca"],
-        "country": ["FI","FI","FI","US","US","US"],
-        "asset_class": ["Equity","Equity","Equity","Equity","Equity","ETF"],
-        "currency": ["EUR","EUR","EUR","USD","USD","USD"],
-        "notes": ["","","","","",""]
-    })
-
-df_list = df_list.fillna("")
-df_list["label"] = df_list.apply(
-    lambda r: f'{r["symbol"]} — {r["name"]} ({", ".join([x for x in [r["exchange"], r["country"], r["currency"], r["asset_class"]] if x])})',
-    axis=1
-)
+# ---------- Symbolilista ----------
+symbol_list = ["NOKIA.HE", "SAMPO.HE", "ELISA.HE", "AAPL", "MSFT", "SPY"]
 
 left, right = st.columns([2,1])
-symbol = left.selectbox(
-    "Symboli (kirjoita hakeaksesi)",
-    options=df_list["symbol"].tolist(),
-    format_func=lambda s: df_list.loc[df_list["symbol"]==s,"label"].iloc[0] if s in df_list["symbol"].values else s,
-)
-custom = left.text_input("…tai anna oma ticker")
-period_label = right.selectbox("Aikajakso", list(PERIODS.keys()), index=4)  # oletus 1v
+symbol = left.selectbox("Valitse symboli", options=symbol_list, index=0)
+custom = left.text_input("…tai kirjoita oma ticker (esim. NVDA, ADS.DE)")
+period_label = right.selectbox("Aikajakso", list(PERIODS.keys()), index=4)
 
 symbol = (custom.strip().upper() if custom.strip() else symbol).strip()
 
-# API-avain (Secrets tai kenttä)
-secret_key = st.secrets.get("TWELVEDATA_API_KEY", "")
-apikey = st.text_input("Twelve Data API Key (tai aseta Secretsiin)", value=secret_key, type="password")
-
+# ---------- Näytä kuvaaja ----------
 if st.button("Näytä kuvaaja", type="primary"):
-    if not apikey:
-        st.warning("Lisää Twelve Data API Key.")
-        st.stop()
-
     start_date, end_date = compute_start_end(period_label)
-    s = fetch_td_series(symbol, start_date, end_date, interval="1day", apikey=apikey)
+    s = fetch_td_series(symbol, start_date, end_date, interval="1day")
 
     if s.empty:
-        st.error(f"Twelve Data ei palauttanut hintadataa: {symbol}")
+        st.error(f"Twelve Data ei palauttanut dataa: {symbol}")
         st.stop()
 
     # --- Tilastot ---
@@ -168,7 +135,7 @@ if st.button("Näytä kuvaaja", type="primary"):
 
     st.pyplot(fig)
 
-    # Tekstit myös alle
+    # --- Info ---
     st.caption(
         f"Keskihinta: {mean:.2f} | ±1σ: [{mean-std:.2f}, {mean+std:.2f}] | "
         f"±2σ: [{mean-2*std:.2f}, {mean+2*std:.2f}] | "
