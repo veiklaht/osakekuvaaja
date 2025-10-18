@@ -8,118 +8,54 @@ import time
 import requests
 import warnings
 
-# (valinnainen) hiljennä yfinance-varoituksia
-warnings.filterwarnings("ignore")
-
-# -------------------------------------------------
-# Verkko-sessio + User-Agent Yahoo/ratelimittejä vastaan
-# -------------------------------------------------
+# ------------------------------
+# A) SESSION (User-Agent + requests)
+# ------------------------------
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
-              "image/webp,image/apng,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Connection": "keep-alive",
 })
+
+# ------------------------------
+# CSV lukeminen, UI setup (täysin kuten ennen)
+# ------------------------------
 st.set_page_config(page_title="Osakekuvaaja", layout="centered")
+# ... (kaikki CSV-lukua ja valikoita koskevat osat tähän väliin)
+# symbol, custom, years jne kuten nyt
 
-# --- Lue CSV lista (tuetaan ticket_base.csv tai tickers_base.csv) ---
-root = Path(__file__).parent
-for name in ["ticket_base.csv", "tickers_base.csv"]:
-    path = root / name
-    if path.exists():
-        df = pd.read_csv(path)
-        break
-else:
-    df = pd.DataFrame({
-        "symbol":["NOKIA.HE","SAMPO.HE","ELISA.HE","AAPL","MSFT","SPY"],
-        "name":["Nokia","Sampo","Elisa","Apple","Microsoft","SPDR S&P 500 ETF"],
-        "exchange":["Nasdaq Helsinki","Nasdaq Helsinki","Nasdaq Helsinki","NASDAQ","NASDAQ","NYSE Arca"],
-        "country":["FI","FI","FI","US","US","US"],
-        "asset_class":["Equity","Equity","Equity","Equity","Equity","ETF"],
-        "currency":["EUR","EUR","EUR","USD","USD","USD"],
-        "notes":["","","","","",""]
-    })
-
-needed = {"symbol","name","exchange","country","asset_class","currency","notes"}
-missing = needed - set(df.columns)
-if missing:
-    st.error(f"CSV missing columns: {missing}. Please keep header as: {sorted(needed)}")
-    st.stop()
-
-df = df.fillna("")
-df["label"] = df.apply(
-    lambda r: f'{r["symbol"]} — {r["name"]} ({", ".join([x for x in [r["exchange"], r["country"], r["currency"], r["asset_class"]] if x])})',
-    axis=1
-)
-
-years_options = {"1v":1, "5v":5, "10v":10, "15v":15}
-
-def norm_cdf(x: float) -> float:
-    # N(0,1) CDF ilman SciPyä
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-st.title("📈 Yksinkertainen osakekuvaaja")
-st.write("Valitse listasta tai kirjoita oma ticker. Data haetaan Yahoo Financesta ja näytetään keskihinta sekä ±1/2/3σ-rajat ja tail-todennäköisyys.")
-
-# --- Filtteri + valinnat ---
-col0, _ = st.columns([1,3])
-asset = col0.selectbox("Asset class", options=["Kaikki"] + sorted(df["asset_class"].unique().tolist()), index=0)
-dfv = df if asset == "Kaikki" else df[df["asset_class"] == asset]
-dfv = dfv.sort_values("label")
-
-col1, col2 = st.columns([2,1])
-symbol = col1.selectbox(
-    "Symboli (kirjoita hakeaksesi)",
-    options=dfv["symbol"].tolist(),
-    index=0 if not dfv.empty else None,
-    format_func=lambda s: dfv.loc[dfv["symbol"]==s,"label"].iloc[0] if s in dfv["symbol"].values else s,
-    placeholder="Esim. NOKIA.HE, SXR8.DE, ^GSPC"
-)
-custom = col1.text_input("…tai anna oma ticker (Enter)")
-years_label = col2.selectbox("Aikajakso", list(years_options.keys()), index=0)
-
-symbol = (custom.strip().upper() if custom.strip() else symbol).strip()
-years = years_options[years_label]
-
-# -------------------------------------------------
-# Symbolivariaatiot (esim. .DE -> myös .F, Adidas -> ADDYY)
-# -------------------------------------------------
+# ------------------------------
+# B) symbol_variants – lisää heti CSV/valintojen jälkeen
+# ------------------------------
 def symbol_variants(sym: str) -> list[str]:
     s = sym.strip().upper()
     out = [s]
     base = s.split(".")[0]
 
-    # Yleiset: kokeile myös ilman päätettä ja US-listaus (ADR tai primary)
-    out += [base]
-
-    # Helsingin pörssi: kokeile US ADR -pari jos tunnettu
-    HE_ADR = {
-        "NOKIA": ["NOK"],           # Nokia ADR (NYSE)
-        "ELISA": ["ELMUF", "ELMAY"],# Elisa OTC
-        "SAMPO": ["SAXPY"],         # Sampo ADR
-        "KNEBV": ["KNYJF"],         # Kone B OTC
-        "NESTE": ["NTOIF", "NTOIY"],
-        "FORTUM": ["FOJCF"],
-        "UPM": ["UPMKY"],
-        "METSB": ["MTSAF"],         # Metsä Board B OTC
-        "KESKOB": ["KKOYF", "KKOYB"],
-        "WRT1V": ["WRTBY"],         # Wärtsilä ADR
-    }
-    if s.endswith(".HE") and base in HE_ADR:
-        out += HE_ADR[base]
-
-    # Saksa: kokeile Frankfurt (.F)
     if s.endswith(".DE"):
         out += [f"{base}.F"]
-        if base == "ADS":          # Adidas ADR
+        if base == "ADS":
             out += ["ADDYY"]
+    if s.endswith(".HE"):
+        he_map = {
+            "NOKIA": ["NOK"],
+            "ELISA": ["ELMUF", "ELMAY"],
+            "SAMPO": ["SAXPY"],
+            "KNEBV": ["KNYJF"],
+            "NESTE": ["NTOIY", "NTOIF"],
+            "FORTUM": ["FOJCF"],
+            "UPM": ["UPMKY"],
+            "METSB": ["MTSAF"],
+            "KESKOB": ["KKOYF", "KKOYB"],
+            "WRT1V": ["WRTBY"]
+        }
+        if base in he_map:
+            out += he_map[base]
 
-    # Ranska ym. jätetään ennalleen; lisää tarvittaessa
-
-    # Poista duplikaatit säilyttäen järjestys
     seen, uniq = set(), []
     for c in out:
         if c and c not in seen:
@@ -127,94 +63,69 @@ def symbol_variants(sym: str) -> list[str]:
             uniq.append(c)
     return uniq
 
-# -------------------------------------------------
-# Robustisti hae sarja (useita yrityksiä/intervalleja/periodeja + fallback)
-# Palauttaa: (series, käytetty_symboli) tai (tyhjä sarja, None)
-# -------------------------------------------------
-def fetch_series(sym: str, years: int, retries: int = 3, pause: float = 1.0) -> tuple[pd.Series, str|None]:
+# ------------------------------
+# C) fetch_series (tämä osa tulee B:n jälkeen)
+# ------------------------------
+@st.cache_data(ttl=600)
+def fetch_series(sym: str, years: int) -> tuple[pd.Series, str | None, list[str]]:
     candidates = symbol_variants(sym)
+    tried = []
     intervals = ["1d", "1wk"]
     periods = [years, years + 1]
 
     for cand in candidates:
         for per in periods:
             for itv in intervals:
-                for attempt in range(1, retries + 1):
-                    # 1) download
-                    try:
-                        df = yf.download(
-                            cand,
-                            period=f"{per}y",
-                            interval=itv,
-                            auto_adjust=False,
-                            progress=False,
-                            threads=False,
-                            session=SESSION,
-                        )
-                        if df is not None and not df.empty:
-                            s = df["Adj Close"] if "Adj Close" in df.columns else df.get("Close")
-                            if isinstance(s, pd.DataFrame):
-                                s = s.squeeze()
-                            s = s.dropna()
-                            if not s.empty:
-                                s.index = pd.to_datetime(s.index)
-                                return s, cand
-                    except Exception:
-                        time.sleep(pause * attempt)
+                tried.append(f"{cand} [{per}y {itv}]")
 
-                    # 2) fallback: history
-                    try:
-                        t = yf.Ticker(cand, session=SESSION)
-                        hist = t.history(period=f"{per}y", interval=itv, auto_adjust=False)
-                        if hist is not None and not hist.empty:
-                            s = hist["Adj Close"] if "Adj Close" in hist.columns else hist.get("Close")
-                            if isinstance(s, pd.DataFrame):
-                                s = s.squeeze()
-                            s = s.dropna()
-                            if not s.empty:
-                                s.index = pd.to_datetime(s.index)
-                                return s, cand
-                    except Exception:
-                        time.sleep(pause * attempt)
+                # 1) download
+                try:
+                    df = yf.download(
+                        cand, period=f"{per}y", interval=itv,
+                        auto_adjust=False, progress=False, threads=False,
+                        session=SESSION,
+                    )
+                    if df is not None and not df.empty:
+                        s = df["Adj Close"] if "Adj Close" in df.columns else df.get("Close")
+                        if isinstance(s, pd.DataFrame):
+                            s = s.squeeze()
+                        s = s.dropna()
+                        if not s.empty:
+                            s.index = pd.to_datetime(s.index)
+                            return s, cand, tried
+                except Exception:
+                    time.sleep(0.8)
 
-    return pd.Series(dtype=float), None
+                # 2) Ticker.history fallback
+                try:
+                    t = yf.Ticker(cand, session=SESSION)
+                    hist = t.history(period=f"{per}y", interval=itv, auto_adjust=False)
+                    if hist is not None and not hist.empty:
+                        s = hist["Adj Close"] if "Adj Close" in hist.columns else hist.get("Close")
+                        if isinstance(s, pd.DataFrame):
+                            s = s.squeeze()
+                        s = s.dropna()
+                        if not s.empty:
+                            s.index = pd.to_datetime(s.index)
+                            return s, cand, tried
+                except Exception:
+                    time.sleep(0.8)
 
-# -------------------------------------------------
-# UI-toiminto
-# -------------------------------------------------
+    return pd.Series(dtype=float), None, tried
+
+# ------------------------------
+# D) napin käsittely (UI-toiminto)
+# ------------------------------
 if st.button("Näytä kuvaaja", type="primary"):
     s, used, tried = fetch_series(symbol, years)
     if s.empty:
         st.warning(
             "Ei saatavilla dataa: **{}**.\n\n"
             "Yritetyt vaihtoehdot:\n- {}\n\n"
-            "Vinkit: kokeile toista markkinapäätettä (esim. `.F` Saksaan) tai ADR:ää (esim. `NOK`)."
+            "Vinkit: kokeile toista markkinapäätettä (esim. `.F` Saksaan) "
+            "tai ADR:ää (esim. `NOK`)."
             .format(symbol, "\n- ".join(tried))
         )
         st.stop()
 
-    mean = float(s.mean())
-    std  = float(s.std(ddof=1)) if s.std(ddof=1)!=0 else 0.0
-    last = float(s.iloc[-1])
-
-    if std == 0:
-        prob_tail = float("nan")
-        pct1 = float("nan")
-    else:
-        z = (last - mean) / std
-        prob_tail = 2 * (1 - (0.5 * (1.0 + math.erf(abs(z)/math.sqrt(2)))))
-        pct1 = (s.between(mean-std, mean+std)).mean()*100
-
-    st.line_chart(s, height=340)
-
-    if used and used != symbol:
-        st.caption(f"Haettiin data tickerillä: **{used}**")
-
-    st.caption(
-        f"Keskihinta: {mean:.2f} | ±1σ: [{mean-std:.2f}, {mean+std:.2f}] | "
-        f"±2σ: [{mean-2*std:.2f}, {mean+2*std:.2f}] | ±3σ: [{mean-3*std:.2f}, {mean+3*std:.2f}]"
-    )
-
-    prob_txt = "—" if not np.isfinite(prob_tail) else f"{prob_tail*100:.3f}%"
-    pct_txt  = "—" if not np.isfinite(pct1) else f"{pct1:.1f}%"
-    st.info(f"Poikkeaman todennäköisyys (|Z|≥|z|): **{prob_txt}** | % ajasta ±1σ: **{pct_txt}**")
+    # ... (mean/std/laskenta ja st.line_chart kuten ennen)
