@@ -18,7 +18,7 @@ from scipy.stats import norm
 
 # ---------------- Streamlit & HTTP ----------------
 st.set_page_config(page_title="Osakekuvaaja (Twelve Data)", layout="wide")
-st.title("📈 Osakekuvaaja — Twelve Data + matplotlib")
+st.title("📈 USA Osakekuvaaja")
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -37,7 +37,6 @@ PERIODS = {
     "1kk": dict(months=1),
     "3kk": dict(months=3),
     "6kk": dict(months=6),
-    "YTD": "ytd",
     "1v": dict(years=1),
     "5v": dict(years=5),
     "10v": dict(years=10),
