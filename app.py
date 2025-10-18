@@ -6,7 +6,14 @@ import streamlit as st
 from pathlib import Path
 import time
 import requests
+import warnings
 
+# (valinnainen) hiljennä yfinance-varoituksia
+warnings.filterwarnings("ignore")
+
+# -------------------------------------------------
+# Verkko-sessio + User-Agent Yahoo/ratelimittejä vastaan
+# -------------------------------------------------
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (compatible; StockApp/1.0; +https://streamlit.app)"
@@ -73,67 +80,92 @@ years_label = col2.selectbox("Aikajakso", list(years_options.keys()), index=0)
 symbol = (custom.strip().upper() if custom.strip() else symbol).strip()
 years = years_options[years_label]
 
-# --- Datahaku ja laskenta ---
-#--def fetch_series(sym: str, years: int) -> pd.Series:
-#    data = yf.download(sym, period=f"{years}y", interval="1d", auto_adjust=False, progress=False)
-#    if data is None or data.empty:
-#        return pd.Series(dtype=float)
-#   s = data["Adj Close"] if "Adj Close" in data.columns else data.get("Close")
-#    if isinstance(s, pd.DataFrame): s = s.squeeze()
-#    return s.dropna()
+# -------------------------------------------------
+# Symbolivariaatiot (esim. .DE -> myös .F, Adidas -> ADDYY)
+# -------------------------------------------------
+def symbol_variants(sym: str) -> list[str]:
+    s = sym.strip().upper()
+    out = [s]
+    base = s.split(".")[0]
 
-def fetch_series(sym: str, years: int, retries: int = 3, pause: float = 1.0) -> pd.Series:
-    """
-    Robustisti hae päivädata:
-      1) yf.download(session=SESSION)
-      2) fallback: yf.Ticker(sym, session=SESSION).history(...)
-    Sis. retryt & virheiden nielemisen. Palauttaa pd.Series tai tyhjän sarjan.
-    """
-    for attempt in range(1, retries + 1):
-        try:
-            df = yf.download(
-                sym,
-                period=f"{years}y",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-                session=SESSION,
-            )
-            if df is not None and not df.empty:
-                s = df["Adj Close"] if "Adj Close" in df.columns else df.get("Close")
-                if isinstance(s, pd.DataFrame):
-                    s = s.squeeze()
-                s = s.dropna()
-                if not s.empty:
-                    return s
-        except Exception:
-            # odota hetki ja yritä uudelleen
-            time.sleep(pause * attempt)
+    if s.endswith(".DE"):
+        out += [f"{base}.F"]           # Frankfurt
+        if base == "ADS":              # Adidas ADR
+            out += ["ADDYY"]
+    # Voit lisätä tänne muita sääntöjä tarvittaessa
 
-        # Fallback: Ticker.history
-        try:
-            t = yf.Ticker(sym, session=SESSION)
-            hist = t.history(period=f"{years}y", interval="1d", auto_adjust=False)
-            if hist is not None and not hist.empty:
-                s = hist["Adj Close"] if "Adj Close" in hist.columns else hist.get("Close")
-                if isinstance(s, pd.DataFrame):
-                    s = s.squeeze()
-                s = s.dropna()
-                if not s.empty:
-                    return s
-        except Exception:
-            time.sleep(pause * attempt)
+    # Poista duplikaatit säilyttäen järjestyksen
+    seen = set()
+    uniq = []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
 
-    # Kaikki yritykset epäonnistuivat
-    return pd.Series(dtype=float)
-    
+# -------------------------------------------------
+# Robustisti hae sarja (useita yrityksiä/intervalleja/periodeja + fallback)
+# Palauttaa: (series, käytetty_symboli) tai (tyhjä sarja, None)
+# -------------------------------------------------
+def fetch_series(sym: str, years: int, retries: int = 3, pause: float = 1.0) -> tuple[pd.Series, str|None]:
+    candidates = symbol_variants(sym)
+    intervals = ["1d", "1wk"]
+    periods = [years, years + 1]
 
+    for cand in candidates:
+        for per in periods:
+            for itv in intervals:
+                for attempt in range(1, retries + 1):
+                    # 1) download
+                    try:
+                        df = yf.download(
+                            cand,
+                            period=f"{per}y",
+                            interval=itv,
+                            auto_adjust=False,
+                            progress=False,
+                            threads=False,
+                            session=SESSION,
+                        )
+                        if df is not None and not df.empty:
+                            s = df["Adj Close"] if "Adj Close" in df.columns else df.get("Close")
+                            if isinstance(s, pd.DataFrame):
+                                s = s.squeeze()
+                            s = s.dropna()
+                            if not s.empty:
+                                s.index = pd.to_datetime(s.index)
+                                return s, cand
+                    except Exception:
+                        time.sleep(pause * attempt)
 
+                    # 2) fallback: history
+                    try:
+                        t = yf.Ticker(cand, session=SESSION)
+                        hist = t.history(period=f"{per}y", interval=itv, auto_adjust=False)
+                        if hist is not None and not hist.empty:
+                            s = hist["Adj Close"] if "Adj Close" in hist.columns else hist.get("Close")
+                            if isinstance(s, pd.DataFrame):
+                                s = s.squeeze()
+                            s = s.dropna()
+                            if not s.empty:
+                                s.index = pd.to_datetime(s.index)
+                                return s, cand
+                    except Exception:
+                        time.sleep(pause * attempt)
+
+    return pd.Series(dtype=float), None
+
+# -------------------------------------------------
+# UI-toiminto
+# -------------------------------------------------
 if st.button("Näytä kuvaaja", type="primary"):
-    s = fetch_series(symbol, years)
+    s, used = fetch_series(symbol, years)
     if s.empty:
-        st.warning(f"Ei saatavilla dataa: {symbol}")
+        st.warning(
+            f"Ei saatavilla dataa: {symbol}. "
+            f"Yritettiin myös: {', '.join(symbol_variants(symbol))}. "
+            "Kokeile hetken päästä uudelleen tai vaihtoehtoista tickeriä (esim. ADS.F / ADDYY Adidakselle)."
+        )
         st.stop()
 
     mean = float(s.mean())
@@ -152,8 +184,15 @@ if st.button("Näytä kuvaaja", type="primary"):
     # Piirto Streamlitin omalla kaaviolla (yksi käyrä)
     st.line_chart(s, height=340)
 
+    # Käytetty symbolivariantti (jos eri kuin syötetty)
+    if used and used != symbol:
+        st.caption(f"Haettiin datat tickerillä: {used}")
+
     # Sigma-viivat + mean erikseen tekstinä (kevyesti)
-    st.caption(f"Keskihinta: {mean:.2f} | ±1σ: [{mean-std:.2f}, {mean+std:.2f}] | ±2σ: [{mean-2*std:.2f}, {mean+2*std:.2f}] | ±3σ: [{mean-3*std:.2f}, {mean+3*std:.2f}]")
+    st.caption(
+        f"Keskihinta: {mean:.2f} | ±1σ: [{mean-std:.2f}, {mean+std:.2f}] | "
+        f"±2σ: [{mean-2*std:.2f}, {mean+2*std:.2f}] | ±3σ: [{mean-3*std:.2f}, {mean+3*std:.2f}]"
+    )
 
     prob_txt = "—" if not np.isfinite(prob_tail) else f"{prob_tail*100:.3f}%"
     pct_txt  = "—" if not np.isfinite(pct1) else f"{pct1:.1f}%"
