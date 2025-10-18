@@ -4,6 +4,13 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 from pathlib import Path
+import time
+import requests
+
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (compatible; StockApp/1.0; +https://streamlit.app)"
+})
 
 st.set_page_config(page_title="Osakekuvaaja", layout="centered")
 
@@ -67,13 +74,61 @@ symbol = (custom.strip().upper() if custom.strip() else symbol).strip()
 years = years_options[years_label]
 
 # --- Datahaku ja laskenta ---
-def fetch_series(sym: str, years: int) -> pd.Series:
-    data = yf.download(sym, period=f"{years}y", interval="1d", auto_adjust=False, progress=False)
-    if data is None or data.empty:
-        return pd.Series(dtype=float)
-    s = data["Adj Close"] if "Adj Close" in data.columns else data.get("Close")
-    if isinstance(s, pd.DataFrame): s = s.squeeze()
-    return s.dropna()
+#--def fetch_series(sym: str, years: int) -> pd.Series:
+#    data = yf.download(sym, period=f"{years}y", interval="1d", auto_adjust=False, progress=False)
+#    if data is None or data.empty:
+#        return pd.Series(dtype=float)
+#   s = data["Adj Close"] if "Adj Close" in data.columns else data.get("Close")
+#    if isinstance(s, pd.DataFrame): s = s.squeeze()
+#    return s.dropna()
+
+def fetch_series(sym: str, years: int, retries: int = 3, pause: float = 1.0) -> pd.Series:
+    """
+    Robustisti hae päivädata:
+      1) yf.download(session=SESSION)
+      2) fallback: yf.Ticker(sym, session=SESSION).history(...)
+    Sis. retryt & virheiden nielemisen. Palauttaa pd.Series tai tyhjän sarjan.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            df = yf.download(
+                sym,
+                period=f"{years}y",
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+                session=SESSION,
+            )
+            if df is not None and not df.empty:
+                s = df["Adj Close"] if "Adj Close" in df.columns else df.get("Close")
+                if isinstance(s, pd.DataFrame):
+                    s = s.squeeze()
+                s = s.dropna()
+                if not s.empty:
+                    return s
+        except Exception:
+            # odota hetki ja yritä uudelleen
+            time.sleep(pause * attempt)
+
+        # Fallback: Ticker.history
+        try:
+            t = yf.Ticker(sym, session=SESSION)
+            hist = t.history(period=f"{years}y", interval="1d", auto_adjust=False)
+            if hist is not None and not hist.empty:
+                s = hist["Adj Close"] if "Adj Close" in hist.columns else hist.get("Close")
+                if isinstance(s, pd.DataFrame):
+                    s = s.squeeze()
+                s = s.dropna()
+                if not s.empty:
+                    return s
+        except Exception:
+            time.sleep(pause * attempt)
+
+    # Kaikki yritykset epäonnistuivat
+    return pd.Series(dtype=float)
+    
+
 
 if st.button("Näytä kuvaaja", type="primary"):
     s = fetch_series(symbol, years)
