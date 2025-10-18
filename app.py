@@ -1,7 +1,8 @@
-# app.py — Osakekuvaaja (Streamlit), robusti Yahoo-haku + CSV-lista
+# app.py — Osakekuvaaja (Streamlit), robusti Yahoo-haku + rate limit -käsittely + CSV-lista
 
-import math
 import io
+import math
+import random
 import time
 import warnings
 from pathlib import Path
@@ -14,18 +15,43 @@ import requests
 import yfinance as yf
 import streamlit as st
 
-# ------------------------------
+# YFRateLimitError on uudemmissa yfinance-versioissa; fallback jos puuttuu
+try:
+    from yfinance.exceptions import YFRateLimitError
+except Exception:  # pragma: no cover
+    class YFRateLimitError(Exception):
+        pass
+
+# --------------------------------------------------------------------
 # Yleisasetukset
-# ------------------------------
+# --------------------------------------------------------------------
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="Osakekuvaaja", layout="centered")
+st.set_option("client.showErrorDetails", True)
 
-# ------------------------------
-# A) Yhteinen requests.Session + "selain" headerit
-# ------------------------------
+# Kevyt kuristin: estä liian tiheät ulkoverkkopyynnöt
+if "last_call_ts" not in st.session_state:
+    st.session_state.last_call_ts = 0.0
+
+def throttle(min_interval=2.0):
+    now = time.time()
+    delta = now - st.session_state.last_call_ts
+    if delta < min_interval:
+        time.sleep(min_interval - delta)
+    st.session_state.last_call_ts = time.time()
+
+def backoff_sleep(attempt: int, retry_after: float | None = None, base: float = 0.8, cap: float = 8.0):
+    """Nuku joko Retry-After sekuntien verran tai eksponentiaalisesti (jitter)."""
+    if retry_after is not None:
+        time.sleep(min(cap, max(0.0, retry_after)))
+        return
+    sleep_s = min(cap, base * (2 ** (attempt - 1)))
+    sleep_s *= (0.8 + 0.4 * random.random())  # jitter
+    time.sleep(sleep_s)
+
+# Yhteinen requests.Session + "selain" headerit (helpottaa 403/HTML-tilanteita)
 SESSION = requests.Session()
 SESSION.headers.update({
-    # Moderni desktop-selaimen UA vähentää Yahoo HTML/403-vastauksia
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -37,9 +63,9 @@ SESSION.headers.update({
     "Connection": "keep-alive",
 })
 
-# ------------------------------
+# --------------------------------------------------------------------
 # CSV-luku: ticket_base.csv tai tickers_base.csv
-# ------------------------------
+# --------------------------------------------------------------------
 root = Path(__file__).parent
 df = None
 for name in ["ticket_base.csv", "tickers_base.csv"]:
@@ -73,17 +99,19 @@ df["label"] = df.apply(
     axis=1
 )
 
-# ------------------------------
-# UI: valinnat
-# ------------------------------
+# --------------------------------------------------------------------
+# UI
+# --------------------------------------------------------------------
 years_options = {"1v": 1, "5v": 5, "10v": 10, "15v": 15}
 
 st.title("📈 Yksinkertainen osakekuvaaja")
 st.write(
     "Valitse listasta tai kirjoita oma ticker. Data haetaan Yahoo Financesta. "
-    "Näytetään keskihinta sekä ±1/2/3σ-rajat ja kahden hännän todennäköisyys "
-    "(kuinka epätodennäköinen nykyinen poikkeama on normaalijakaumassa)."
+    "Näytetään keskihinta sekä ±1/2/3σ-rajat ja kahden hännän todennäköisyys."
 )
+
+col_dbg, _ = st.columns([1,3])
+show_debug = col_dbg.checkbox("Näytä debug-tiedot", value=False)
 
 col0, _ = st.columns([1, 3])
 asset = col0.selectbox("Asset class", options=["Kaikki"] + sorted(df["asset_class"].unique().tolist()), index=0)
@@ -105,18 +133,18 @@ years_label = col2.selectbox("Aikajakso", list(years_options.keys()), index=0)
 symbol = (custom.strip().upper() if custom.strip() else symbol).strip()
 years = years_options[years_label]
 
-# ------------------------------
-# B) Ticker-variantit (HE→ADR, DE→F, ym.)
-# ------------------------------
+# --------------------------------------------------------------------
+# Symbolivariaatiot (HE→ADR/OTC, DE→F, ym.)
+# --------------------------------------------------------------------
 def symbol_variants(sym: str) -> list[str]:
     s = sym.strip().upper()
     out = [s]
     base = s.split(".")[0]
 
-    # Yleisiksi vaihtoehdoiksi mukaan myös "base" ilman päätettä (joissain listauksissa toimii)
+    # Yleiseksi vaihtoehdoksi myös base ilman päätettä
     out.append(base)
 
-    # Helsingin pörssi → mahdolliset ADR/OTC -vastineet
+    # Helsingin pörssi → mahdolliset ADR/OTC-vastineet
     HE_ADR = {
         "NOKIA":  ["NOK"],            # Nokia ADR (NYSE)
         "ELISA":  ["ELMUF", "ELMAY"], # Elisa OTC
@@ -132,13 +160,13 @@ def symbol_variants(sym: str) -> list[str]:
     if s.endswith(".HE") and base in HE_ADR:
         out += HE_ADR[base]
 
-    # Saksa (XETRA) → Frankfurt -vaihtoehto
+    # Saksa (XETRA) → Frankfurt -vaihtoehto + Adidas ADR
     if s.endswith(".DE"):
         out.append(f"{base}.F")
-        if base == "ADS":  # Adidas ADR
+        if base == "ADS":
             out.append("ADDYY")
 
-    # Duplikaatit pois
+    # Poista duplikaatit säilyttäen järjestyksen
     seen, uniq = set(), []
     for c in out:
         if c and c not in seen:
@@ -146,15 +174,19 @@ def symbol_variants(sym: str) -> list[str]:
             uniq.append(c)
     return uniq
 
-# ------------------------------
-# C) Robustisti & välimuistilla: download → history → CSV-endpoint
-# ------------------------------
+# --------------------------------------------------------------------
+# Robustisti & välimuistilla: download → history → Yahoo CSV -fallback
+# --------------------------------------------------------------------
 @st.cache_data(ttl=600)
 def fetch_series(sym: str, years: int) -> tuple[pd.Series, str | None, list[str]]:
     """
-    Palauttaa (pd.Series, käytetty_symboli, yritetyt_vaihtoehdot)
-    Yrittää yfinance.download → Ticker.history → suora Yahoo CSV
-    ja testaa myös symbolivariaatiot, 1d/1wk sekä years/years+1.
+    Palauttaa (pd.Series, käytetty_symboli, yritetyt_vaihtoehdot).
+    Testaa symbolivariaatiot, intervalit (1d/1wk) ja periodit (y/y+1).
+    Tasot:
+      1) yfinance.download
+      2) yfinance.Ticker(...).history
+      3) suora Yahoo CSV -endpoint (query1.finance.yahoo.com/v7/finance/download/…)
+    Sis. kevyt throttle + backoff + Retry-After -tuki.
     """
     def _series_from_df(df: pd.DataFrame) -> pd.Series:
         if df is None or df.empty:
@@ -172,77 +204,101 @@ def fetch_series(sym: str, years: int) -> tuple[pd.Series, str | None, list[str]
     candidates = symbol_variants(sym)
     intervals = ["1d", "1wk"]
     periods = [years, years + 1]
+    retries = 2  # yritykset per taso
 
     for cand in candidates:
         for per in periods:
             for itv in intervals:
                 tried.append(f"{cand} [{per}y {itv}]")
 
-                # 1) yfinance.download
-                try:
-                    df = yf.download(
-                        cand, period=f"{per}y", interval=itv,
-                        auto_adjust=False, progress=False, threads=False,
-                        session=SESSION,
-                    )
-                    s = _series_from_df(df)
-                    if not s.empty:
-                        return s, cand, tried
-                except Exception:
-                    time.sleep(0.8)
+                # ---- 1) yfinance.download ----
+                for attempt in range(1, retries + 1):
+                    try:
+                        throttle(2.0)
+                        df = yf.download(
+                            cand, period=f"{per}y", interval=itv,
+                            auto_adjust=False, progress=False, threads=False,
+                            session=SESSION,
+                        )
+                        s = _series_from_df(df)
+                        if not s.empty:
+                            return s, cand, tried
+                    except YFRateLimitError as e:
+                        backoff_sleep(attempt=attempt)
+                        continue
+                    except Exception:
+                        backoff_sleep(attempt=attempt)
 
-                # 2) Ticker.history
-                try:
-                    t = yf.Ticker(cand, session=SESSION)
-                    hist = t.history(period=f"{per}y", interval=itv, auto_adjust=False)
-                    s = _series_from_df(hist)
-                    if not s.empty:
-                        return s, cand, tried
-                except Exception:
-                    time.sleep(0.8)
+                # ---- 2) Ticker.history ----
+                for attempt in range(1, retries + 1):
+                    try:
+                        throttle(2.0)
+                        t = yf.Ticker(cand, session=SESSION)
+                        hist = t.history(period=f"{per}y", interval=itv, auto_adjust=False)
+                        s = _series_from_df(hist)
+                        if not s.empty:
+                            return s, cand, tried
+                    except YFRateLimitError:
+                        backoff_sleep(attempt=attempt)
+                        continue
+                    except Exception:
+                        backoff_sleep(attempt=attempt)
 
-                # 3) Suora Yahoo CSV -endpoint
-                try:
-                    # laske epoch-ajat: per vuotta taakse + puskuria
-                    end_dt = datetime.utcnow() + timedelta(days=2)
-                    start_dt = end_dt - timedelta(days=int(per * 365 + 10))
-                    period1 = int(start_dt.timestamp())
-                    period2 = int(end_dt.timestamp())
+                # ---- 3) Suora Yahoo CSV -endpoint ----
+                for attempt in range(1, retries + 1):
+                    try:
+                        throttle(2.0)
+                        end_dt = datetime.utcnow() + timedelta(days=2)
+                        start_dt = end_dt - timedelta(days=int(per * 365 + 10))
+                        period1 = int(start_dt.timestamp())
+                        period2 = int(end_dt.timestamp())
 
-                    url = (
-                        "https://query1.finance.yahoo.com/v7/finance/download/"
-                        f"{quote_plus(cand)}"
-                        f"?period1={period1}&period2={period2}"
-                        f"&interval={itv}&events=history&includeAdjustedClose=true"
-                    )
-                    resp = SESSION.get(url, timeout=15)
-                    if resp.ok and resp.text and "Date,Open,High,Low,Close" in resp.text:
-                        csv_df = pd.read_csv(io.StringIO(resp.text))
-                        if "Date" in csv_df.columns:
-                            csv_df["Date"] = pd.to_datetime(csv_df["Date"], errors="coerce")
-                            csv_df = csv_df.dropna(subset=["Date"]).set_index("Date").sort_index()
-                            s = _series_from_df(csv_df)
-                            if not s.empty:
-                                return s, cand, tried
-                except Exception:
-                    time.sleep(0.8)
+                        url = (
+                            "https://query1.finance.yahoo.com/v7/finance/download/"
+                            f"{quote_plus(cand)}"
+                            f"?period1={period1}&period2={period2}"
+                            f"&interval={itv}&events=history&includeAdjustedClose=true"
+                        )
+                        resp = SESSION.get(url, timeout=15)
+
+                        if resp.status_code == 429:
+                            ra = resp.headers.get("Retry-After")
+                            retry_after = float(ra) if ra and ra.isdigit() else None
+                            backoff_sleep(attempt=attempt, retry_after=retry_after)
+                            continue
+
+                        if resp.ok and resp.text and "Date,Open,High,Low,Close" in resp.text:
+                            csv_df = pd.read_csv(io.StringIO(resp.text))
+                            if "Date" in csv_df.columns:
+                                csv_df["Date"] = pd.to_datetime(csv_df["Date"], errors="coerce")
+                                csv_df = csv_df.dropna(subset=["Date"]).set_index("Date").sort_index()
+                                s = _series_from_df(csv_df)
+                                if not s.empty:
+                                    return s, cand, tried
+                    except Exception:
+                        backoff_sleep(attempt=attempt)
 
     return pd.Series(dtype=float), None, tried
 
-# ------------------------------
-# D) UI-toiminto: nappi → haku → laskenta → kuvaaja
-# ------------------------------
+# --------------------------------------------------------------------
+# UI-toiminto: nappi → haku → laskenta → kuvaaja
+# --------------------------------------------------------------------
 def norm_cdf(x: float) -> float:
     # N(0,1) CDF ilman SciPyä
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 if st.button("Näytä kuvaaja", type="primary"):
     s, used, tried = fetch_series(symbol, years)
+
+    if show_debug:
+        st.code("\n".join(tried), language="text")
+
     if s.empty:
         st.warning(
-            "Ei saatavilla dataa: **{}**.\n\n"
+            "Yahoo Finance -rajapinta ei palauttanut dataa: **{}**.\n\n"
             "Yritetyt vaihtoehdot:\n- {}\n\n"
-            "Vinkit: kokeile toista markkinapäätettä (esim. `.F` Saksaan) tai ADR:ää (esim. `NOK`)."
+            "Vinkit: odota hetki (rate limit), kokeile toista markkinapäätettä (esim. `.F` Saksaan) "
+            "tai ADR:ää (esim. **NOK** Nokialle, **ADDYY** Adidakselle)."
             .format(symbol, "\n- ".join(tried))
         )
         st.stop()
@@ -259,10 +315,8 @@ if st.button("Näytä kuvaaja", type="primary"):
         prob_tail = 2 * (1 - norm_cdf(abs(z)))   # kahden hännän todennäköisyys
         pct1 = (s.between(mean - std, mean + std)).mean() * 100
 
-    # Kevyt piirto Streamlitin omalla kaaviolla
     st.line_chart(s, height=360)
 
-    # Info
     if used and used != symbol:
         st.caption(f"Haettiin data tickerillä: **{used}**")
 
