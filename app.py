@@ -16,9 +16,13 @@ warnings.filterwarnings("ignore")
 # -------------------------------------------------
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (compatible; StockApp/1.0; +https://streamlit.app)"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+              "image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
 })
-
 st.set_page_config(page_title="Osakekuvaaja", layout="centered")
 
 # --- Lue CSV lista (tuetaan ticket_base.csv tai tickers_base.csv) ---
@@ -88,17 +92,37 @@ def symbol_variants(sym: str) -> list[str]:
     out = [s]
     base = s.split(".")[0]
 
-    if s.endswith(".DE"):
-        out += [f"{base}.F"]           # Frankfurt
-        if base == "ADS":              # Adidas ADR
-            out += ["ADDYY"]
-    # Voit lisätä tänne muita sääntöjä tarvittaessa
+    # Yleiset: kokeile myös ilman päätettä ja US-listaus (ADR tai primary)
+    out += [base]
 
-    # Poista duplikaatit säilyttäen järjestyksen
-    seen = set()
-    uniq = []
+    # Helsingin pörssi: kokeile US ADR -pari jos tunnettu
+    HE_ADR = {
+        "NOKIA": ["NOK"],           # Nokia ADR (NYSE)
+        "ELISA": ["ELMUF", "ELMAY"],# Elisa OTC
+        "SAMPO": ["SAXPY"],         # Sampo ADR
+        "KNEBV": ["KNYJF"],         # Kone B OTC
+        "NESTE": ["NTOIF", "NTOIY"],
+        "FORTUM": ["FOJCF"],
+        "UPM": ["UPMKY"],
+        "METSB": ["MTSAF"],         # Metsä Board B OTC
+        "KESKOB": ["KKOYF", "KKOYB"],
+        "WRT1V": ["WRTBY"],         # Wärtsilä ADR
+    }
+    if s.endswith(".HE") and base in HE_ADR:
+        out += HE_ADR[base]
+
+    # Saksa: kokeile Frankfurt (.F)
+    if s.endswith(".DE"):
+        out += [f"{base}.F"]
+        if base == "ADS":          # Adidas ADR
+            out += ["ADDYY"]
+
+    # Ranska ym. jätetään ennalleen; lisää tarvittaessa
+
+    # Poista duplikaatit säilyttäen järjestys
+    seen, uniq = set(), []
     for c in out:
-        if c not in seen:
+        if c and c not in seen:
             seen.add(c)
             uniq.append(c)
     return uniq
@@ -159,12 +183,13 @@ def fetch_series(sym: str, years: int, retries: int = 3, pause: float = 1.0) -> 
 # UI-toiminto
 # -------------------------------------------------
 if st.button("Näytä kuvaaja", type="primary"):
-    s, used = fetch_series(symbol, years)
+    s, used, tried = fetch_series(symbol, years)
     if s.empty:
         st.warning(
-            f"Ei saatavilla dataa: {symbol}. "
-            f"Yritettiin myös: {', '.join(symbol_variants(symbol))}. "
-            "Kokeile hetken päästä uudelleen tai vaihtoehtoista tickeriä (esim. ADS.F / ADDYY Adidakselle)."
+            "Ei saatavilla dataa: **{}**.\n\n"
+            "Yritetyt vaihtoehdot:\n- {}\n\n"
+            "Vinkit: kokeile toista markkinapäätettä (esim. `.F` Saksaan) tai ADR:ää (esim. `NOK`)."
+            .format(symbol, "\n- ".join(tried))
         )
         st.stop()
 
@@ -172,23 +197,19 @@ if st.button("Näytä kuvaaja", type="primary"):
     std  = float(s.std(ddof=1)) if s.std(ddof=1)!=0 else 0.0
     last = float(s.iloc[-1])
 
-    # Tilastot
     if std == 0:
         prob_tail = float("nan")
         pct1 = float("nan")
     else:
         z = (last - mean) / std
-        prob_tail = 2 * (1 - norm_cdf(abs(z)))
+        prob_tail = 2 * (1 - (0.5 * (1.0 + math.erf(abs(z)/math.sqrt(2)))))
         pct1 = (s.between(mean-std, mean+std)).mean()*100
 
-    # Piirto Streamlitin omalla kaaviolla (yksi käyrä)
     st.line_chart(s, height=340)
 
-    # Käytetty symbolivariantti (jos eri kuin syötetty)
     if used and used != symbol:
-        st.caption(f"Haettiin datat tickerillä: {used}")
+        st.caption(f"Haettiin data tickerillä: **{used}**")
 
-    # Sigma-viivat + mean erikseen tekstinä (kevyesti)
     st.caption(
         f"Keskihinta: {mean:.2f} | ±1σ: [{mean-std:.2f}, {mean+std:.2f}] | "
         f"±2σ: [{mean-2*std:.2f}, {mean+2*std:.2f}] | ±3σ: [{mean-3*std:.2f}, {mean+3*std:.2f}]"
