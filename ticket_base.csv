@@ -1,0 +1,102 @@
+symbol,name,exchange,country,asset_class,currency,notes
+NOKIA.HE,Nokia,Nasdaq Helsinki,FI,Equity,EUR,Large-cap telecom & networks
+SAMPO.HE,Sampo,Nasdaq Helsinki,FI,Equity,EUR,Financials/insurance
+ELISA.HE,Elisa,Nasdaq Helsinki,FI,Equity,EUR,Telecom
+KNEBV.HE,Kone B,Nasdaq Helsinki,FI,Equity,EUR,Elevators/escalators
+UPM.HE,UPM-Kymmene,Nasdaq Helsinki,FI,Equity,EUR,Pulp & paper
+METSB.HE,Metsä Board B,Nasdaq Helsinki,FI,Equity,EUR,Paper/packaging
+FORTUM.HE,Fortum,Nasdaq Helsinki,FI,Equity,EUR,Energy
+NESTE.HE,Neste,Nasdaq Helsinki,FI,Equity,EUR,Energy/renewables
+KESKOB.HE,Kesko B,Nasdaq Helsinki,FI,Equity,EUR,Retail
+WRT1V.HE,Wärtsilä,Nasdaq Helsinki,FI,Equity,EUR,Industrial/engines
+OUT1V.HE,Outokumpu,Nasdaq Helsinki,FI,Equity,EUR,Metals & mining
+TIETO.HE,Tietoevry,Nasdaq Helsinki,FI,Equity,EUR,IT services
+AAPL,Apple,NASDAQ,US,Equity,USD,
+MSFT,Microsoft,NASDAQ,US,Equity,USD,
+AMZN,Amazon,NASDAQ,US,Equity,USD,
+GOOGL,Alphabet Class A,NASDAQ,US,Equity,USD,
+META,Meta Platforms,NASDAQ,US,Equity,USD,
+NVDA,NVIDIA,NASDAQ,US,Equity,USD,
+TSLA,Tesla,NASDAQ,US,Equity,USD,
+BRK-B,Berkshire Hathaway B,NYSE,US,Equity,USD,yfinance ticker uses BRK-B
+JPM,JPMorgan Chase,NYSE,US,Equity,USD,
+JNJ,Johnson & Johnson,NYSE,US,Equity,USD,
+XOM,ExxonMobil,NYSE,US,Equity,USD,
+V,Visa,NYSE,US,Equity,USD,
+UNH,UnitedHealth,NYSE,US,Equity,USD,
+PG,Procter & Gamble,NYSE,US,Equity,USD,
+MA,Mastercard,NYSE,US,Equity,USD,
+SAP.DE,SAP,XETRA,DE,Equity,EUR,
+ALV.DE,Allianz,XETRA,DE,Equity,EUR,
+BAYN.DE,Bayer,XETRA,DE,Equity,EUR,
+BAS.DE,BASF,XETRA,DE,Equity,EUR,
+BMW.DE,BMW,XETRA,DE,Equity,EUR,
+MBG.DE,Mercedes-Benz Group,XETRA,DE,Equity,EUR,
+DPW.DE,Deutsche Post,XETRA,DE,Equity,EUR,
+DB1.DE,Deutsche Boerse,XETRA,DE,Equity,EUR,
+IFX.DE,Infineon,XETRA,DE,Equity,EUR,
+RWE.DE,RWE,XETRA,DE,Equity,EUR,
+SIE.DE,Siemens,XETRA,DE,Equity,EUR,
+VOW3.DE,Volkswagen Pref,XETRA,DE,Equity,EUR,Pref shares ticker
+ADS.DE,Adidas,XETRA,DE,Equity,EUR,
+AIR.PA,Airbus,Euronext Paris,FR,Equity,EUR,
+AI.PA,Air Liquide,Euronext Paris,FR,Equity,EUR,
+BNP.PA,BNP Paribas,Euronext Paris,FR,Equity,EUR,
+SAN.PA,Sanofi,Euronext Paris,FR,Equity,EUR,
+SU.PA,Schneider Electric,Euronext Paris,FR,Equity,EUR,
+OR.PA,L'Oréal,Euronext Paris,FR,Equity,EUR,
+MC.PA,LVMH,Euronext Paris,FR,Equity,EUR,
+DG.PA,Vinci,Euronext Paris,FR,Equity,EUR,
+KER.PA,Kering,Euronext Paris,FR,Equity,EUR,
+ENGI.PA,Engie,Euronext Paris,FR,Equity,EUR,
+AZN.L,AstraZeneca,LSE,UK,Equity,GBP,
+HSBA.L,HSBC,LSE,UK,Equity,GBP,
+BARC.L,Barclays,LSE,UK,Equity,GBP,
+BP.L,BP,LSE,UK,Equity,GBP,
+SHEL.L,Shell,LSE,UK,Equity,GBP,
+GSK.L,GSK,LSE,UK,Equity,GBP,
+ULVR.L,Unilever,LSE,UK,Equity,GBP,
+RIO.L,Rio Tinto,LSE,UK,Equity,GBP,
+BATS.L,BAT,LSE,UK,Equity,GBP,
+NG.L,National Grid,LSE,UK,Equity,GBP,
+TSCO.L,Tesco,LSE,UK,Equity,GBP,
+ASML.AS,ASML,Euronext Amsterdam,NL,Equity,EUR,
+PHIA.AS,Philips,Euronext Amsterdam,NL,Equity,EUR,
+RAND.AS,Randstad,Euronext Amsterdam,NL,Equity,EUR,
+ADYEN.AS,Adyen,Euronext Amsterdam,NL,Equity,EUR,
+ITX.MC,Inditex,Bolsa de Madrid,ES,Equity,EUR,Zara parent
+SAN.MC,Banco Santander,Bolsa de Madrid,ES,Equity,EUR,
+BBVA.MC,BBVA,Bolsa de Madrid,ES,Equity,EUR,
+IBE.MC,Iberdrola,Bolsa de Madrid,ES,Equity,EUR,
+ENEL.MI,Enel,Borsa Italiana,IT,Equity,EUR,
+ENI.MI,ENI,Borsa Italiana,IT,Equity,EUR,
+ISP.MI,Intesa Sanpaolo,Borsa Italiana,IT,Equity,EUR,
+UCG.MI,UniCredit,Borsa Italiana,IT,Equity,EUR,
+VOLV-B.ST,Volvo B,Nasdaq Stockholm,SE,Equity,SEK,
+ERIC-B.ST,Ericsson B,Nasdaq Stockholm,SE,Equity,SEK,
+HMB.ST,H&M,Nasdaq Stockholm,SE,Equity,SEK,
+SAND.ST,Sandvik,Nasdaq Stockholm,SE,Equity,SEK,
+ATCO-A.ST,Atlas Copco A,Nasdaq Stockholm,SE,Equity,SEK,
+ATCO-B.ST,Atlas Copco B,Nasdaq Stockholm,SE,Equity,SEK,
+SPY,SPDR S&P 500 ETF,NYSE Arca,US,ETF,USD,US-domiciled
+QQQ,Invesco QQQ,NASDAQ,US,ETF,USD,US-domiciled
+VTI,Vanguard Total Market,NYSE Arca,US,ETF,USD,US-domiciled
+IWM,iShares Russell 2000,NYSE Arca,US,ETF,USD,US-domiciled
+EFA,iShares MSCI EAFE,NYSE Arca,US,ETF,USD,US-domiciled
+EEM,iShares MSCI Emerging,NYSE Arca,US,ETF,USD,US-domiciled
+EUNL.DE,iShares Core MSCI World UCITS (Acc),XETRA,DE,ETF,EUR,UCITS
+SXR8.DE,iShares Core S&P 500 UCITS (Acc),XETRA,DE,ETF,EUR,UCITS
+VWCE.DE,Vanguard FTSE All-World UCITS (Acc),XETRA,DE,ETF,EUR,UCITS
+CSPX.L,iShares Core S&P 500 UCITS (Acc),LSE,UK,ETF,USD,UCITS
+VUAG.L,Vanguard S&P 500 UCITS (Acc),LSE,UK,ETF,USD,UCITS
+VUSA.L,Vanguard S&P 500 UCITS (Dist),LSE,UK,ETF,USD,UCITS
+VEVE.L,Vanguard FTSE Developed World UCITS,LSE,UK,ETF,USD,UCITS
+IWDA.AS,iShares MSCI World UCITS (Acc),Euronext Amsterdam,NL,ETF,EUR,UCITS
+^GSPC,S&P 500,Index,US,Index,USD,
+^NDX,Nasdaq 100,Index,US,Index,USD,
+^DJI,Dow Jones Industrial Average,Index,US,Index,USD,
+^STOXX50E,EuroStoxx 50,Index,EU,Index,EUR,
+^GDAXI,DAX,Index,DE,Index,EUR,
+^FCHI,CAC 40,Index,FR,Index,EUR,
+^FTSE,FTSE 100,Index,UK,Index,GBP,
+^OMXH25,OMX Helsinki 25,Index,FI,Index,EUR,
