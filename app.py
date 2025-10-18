@@ -1,6 +1,6 @@
 # app.py — Osakekuvaaja (Streamlit)
 # Lähdejärjestys: 1) Yahoo CSV (query1/query2 + crumb)  2) Stooq CSV  3) Twelve Data API
-# Ei yfinancea (ei YFRateLimitErroria)
+# Ei yfinancea (ei YFRateLimitErroria). Piirto Altairilla: mean + ±1/2/3σ viivat.
 
 import io
 import math
@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import altair as alt
 
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="Osakekuvaaja", layout="centered")
@@ -90,7 +91,7 @@ df["label"] = df.apply(
 years_options = {"1v": 1, "5v": 5, "10v": 10, "15v": 15}
 
 st.title("📈 Yksinkertainen osakekuvaaja")
-st.write("Data: Yahoo CSV → Stooq → Twelve Data (API). Jos Yahoo/Stooq blokkaa, Twelve Data varmistaa tuloksen.")
+st.write("Data: Yahoo CSV → Stooq → Twelve Data (API). Altair-kaaviossa mean ja ±1/2/3σ-rajat.")
 
 col_dbg, _ = st.columns([1,3])
 show_debug = col_dbg.checkbox("Näytä debug-tiedot", value=False)
@@ -210,7 +211,6 @@ def series_from_ohlc_df(df: pd.DataFrame) -> pd.Series:
 def to_stooq_symbols(ticker: str) -> list[str]:
     t = ticker.upper()
     out = [f"{t.lower()}.us"]  # yleinen US-listaus/ADR
-    base = t.split(".")[0]
     ADR_MAP = {
         "NOKIA.HE": ["nok.us"],
         "NOKIA":    ["nok.us"],
@@ -253,13 +253,8 @@ def try_fetch_stooq_csv(stooq_symbol: str, interval: str, attempts: int = 2):
 
 # ---------------- Twelve Data helperit ----------------
 def to_twelvedata_symbols(ticker: str) -> list[str]:
-    """
-    Twelve Data tukee suoraan 'NOKIA.HE', 'ELISA.HE', jne.
-    Lisäksi kokeile yleisiä ADR/US-varianteja.
-    """
     t = ticker.upper().strip()
     out = [t]
-    base = t.split(".")[0]
     TD_MAP = {
         "NOKIA.HE": ["NOKIA.HE","NOK"],  # suora HE + ADR
         "NOKIA":    ["NOKIA.HE","NOK"],
@@ -274,23 +269,17 @@ def to_twelvedata_symbols(ticker: str) -> list[str]:
     }
     if t in TD_MAP:
         out = TD_MAP[t] + out
-    # poista duplikaatit
     seen, uniq = set(), []
-    for s in out:
-        if s and s not in seen:
-            seen.add(s)
-            uniq.append(s)
+    for s_ in out:
+        if s_ and s_ not in seen:
+            seen.add(s_)
+            uniq.append(s_)
     return uniq
 
 def try_fetch_twelvedata(sym: str, years: int, interval: str, apikey: str):
-    """
-    Twelve Data: https://api.twelvedata.com/time_series
-    interval: 1day / 1week
-    outputsize: riittävän iso, jotta kattaa vuosia
-    """
     int_map = {"1d": "1day", "1wk": "1week"}
     itv = int_map.get(interval, "1day")
-    outputsize = 5000  # maksimoi historian
+    outputsize = 5000
     url = (
         "https://api.twelvedata.com/time_series"
         f"?symbol={quote_plus(sym)}"
@@ -312,10 +301,8 @@ def try_fetch_twelvedata(sym: str, years: int, interval: str, apikey: str):
     df["Date"] = pd.to_datetime(df["datetime"], errors="coerce")
     df["Close"] = pd.to_numeric(df["close"], errors="coerce")
     df = df.dropna(subset=["Date","Close"]).set_index("Date").sort_index()
-    # rajaa haluttuun vuosimäärään
     cutoff = df.index.max() - pd.DateOffset(years=years)
     df = df.loc[df.index >= cutoff]
-    # kopioi Close myös Adj Close -kolumniksi yhteensopivuuden vuoksi
     df["Adj Close"] = df["Close"]
     return df
 
@@ -403,8 +390,43 @@ if st.button("Näytä kuvaaja", type="primary"):
         prob_tail = 2 * (1 - norm_cdf(abs(z)))
         pct1 = (s.between(mean - std, mean + std)).mean() * 100
 
-    st.line_chart(s, height=360)
+    # ----- Altair-kaavio: hinta + mean + ±1/2/3σ -----
+    df_plot = s.reset_index()
+    df_plot.columns = ["Date", "Price"]
 
+    # Tee DataFrame:t tasoviivoille (mean ja sigmat)
+    def level_df(level_value):
+        return pd.DataFrame({"Date": df_plot["Date"], "Level": level_value})
+
+    mean_df  = level_df(mean)
+    p1_df    = level_df(mean + std)
+    m1_df    = level_df(mean - std)
+    p2_df    = level_df(mean + 2*std)
+    m2_df    = level_df(mean - 2*std)
+    p3_df    = level_df(mean + 3*std)
+    m3_df    = level_df(mean - 3*std)
+
+    price_line = alt.Chart(df_plot).mark_line().encode(
+        x=alt.X("Date:T", title="Päivä"),
+        y=alt.Y("Price:Q", title="Hinta"),
+        tooltip=[alt.Tooltip("Date:T", title="Päivä"), alt.Tooltip("Price:Q", title="Hinta")]
+    )
+
+    mean_line = alt.Chart(mean_df).mark_line(strokeDash=[4,2], color="green").encode(x="Date:T", y="Level:Q")
+    one_sigma = alt.Chart(p1_df).mark_line(strokeDash=[3,3], color="blue").encode(x="Date:T", y="Level:Q") + \
+                alt.Chart(m1_df).mark_line(strokeDash=[3,3], color="blue").encode(x="Date:T", y="Level:Q")
+    two_sigma = alt.Chart(p2_df).mark_line(strokeDash=[3,3], color="orange").encode(x="Date:T", y="Level:Q") + \
+                alt.Chart(m2_df).mark_line(strokeDash=[3,3], color="orange").encode(x="Date:T", y="Level:Q")
+    three_sigma = alt.Chart(p3_df).mark_line(strokeDash=[3,3], color="red").encode(x="Date:T", y="Level:Q") + \
+                  alt.Chart(m3_df).mark_line(strokeDash=[3,3], color="red").encode(x="Date:T", y="Level:Q")
+
+    chart = (price_line + mean_line + one_sigma + two_sigma + three_sigma).properties(
+        width=800, height=420, title=f"{symbol} — {years_label}"
+    ).interactive()
+
+    st.altair_chart(chart, use_container_width=True)
+
+    # Info-tekstit
     if used and used != symbol:
         st.caption(f"Haettiin data tickerillä: **{used}**")
 
