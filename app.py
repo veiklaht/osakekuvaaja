@@ -1,6 +1,6 @@
 # app.py — Osakekuvaaja (Streamlit)
-# Lähdejärjestys: 1) Yahoo CSV (query1/query2 + crumb)  2) Stooq CSV
-# Ei yfinancea => ei YFRateLimitErroria
+# Lähdejärjestys: 1) Yahoo CSV (query1/query2 + crumb)  2) Stooq CSV  3) Twelve Data API
+# Ei yfinancea (ei YFRateLimitErroria)
 
 import io
 import math
@@ -90,7 +90,7 @@ df["label"] = df.apply(
 years_options = {"1v": 1, "5v": 5, "10v": 10, "15v": 15}
 
 st.title("📈 Yksinkertainen osakekuvaaja")
-st.write("Data haetaan ensisijaisesti Yahoo CSV -rajapinnasta, ja tarvittaessa varalähteestä Stooq (CSV).")
+st.write("Data: Yahoo CSV → Stooq → Twelve Data (API). Jos Yahoo/Stooq blokkaa, Twelve Data varmistaa tuloksen.")
 
 col_dbg, _ = st.columns([1,3])
 show_debug = col_dbg.checkbox("Näytä debug-tiedot", value=False)
@@ -122,10 +122,9 @@ def symbol_variants(sym: str) -> list[str]:
     base = s.split(".")[0]
     out.append(base)  # joskus base ilman päätettä toimii
 
-    # Helsingin pörssi → ADR/OTC -vastineet (Stooq käyttää .us -päätteitä US-listauksille)
     HE_ADR = {
         "NOKIA":  ["NOK"],            # Nokia ADR (NYSE)
-        "ELISA":  ["ELMUF", "ELMAY"], # Elisa OTC
+        "ELISA":  ["ELMUF", "ELMAY"],
         "SAMPO":  ["SAXPY"],
         "KNEBV":  ["KNYJF"],
         "NESTE":  ["NTOIF", "NTOIY"],
@@ -138,13 +137,11 @@ def symbol_variants(sym: str) -> list[str]:
     if s.endswith(".HE") and base in HE_ADR:
         out += HE_ADR[base]
 
-    # Saksa (XETRA) → Frankfurt + Adidas ADR
     if s.endswith(".DE"):
         out.append(f"{base}.F")
         if base == "ADS":
             out.append("ADDYY")
 
-    # Duplikaatit pois
     seen, uniq = set(), []
     for c in out:
         if c and c not in seen:
@@ -211,19 +208,9 @@ def series_from_ohlc_df(df: pd.DataFrame) -> pd.Series:
 
 # ---------------- Stooq CSV helperit ----------------
 def to_stooq_symbols(ticker: str) -> list[str]:
-    """
-    Palauttaa Stooq-symboliehdotuksia annetulle tickerille.
-    Stooq käyttää yleensä .us -päätettä USA-listauksille (pienillä kirjaimilla).
-    Esim: AAPL -> aapl.us, NOK -> nok.us
-    """
     t = ticker.upper()
-    out = []
-
-    # Suora US-listaus (ADR ym.)
-    out.append(f"{t.lower()}.us")
-
+    out = [f"{t.lower()}.us"]  # yleinen US-listaus/ADR
     base = t.split(".")[0]
-    # Erityismappaukset joille tiedämme varman ADR:n
     ADR_MAP = {
         "NOKIA.HE": ["nok.us"],
         "NOKIA":    ["nok.us"],
@@ -241,8 +228,6 @@ def to_stooq_symbols(ticker: str) -> list[str]:
     }
     if t in ADR_MAP:
         out = ADR_MAP[t] + out
-
-    # Duplikaatit pois
     seen, uniq = set(), []
     for c in out:
         if c and c not in seen:
@@ -251,14 +236,9 @@ def to_stooq_symbols(ticker: str) -> list[str]:
     return uniq
 
 def try_fetch_stooq_csv(stooq_symbol: str, interval: str, attempts: int = 2):
-    """
-    Stooq CSV: https://stooq.com/q/d/l/?s=SYMBOL&i=d  tai i=w
-    Esim. aapl.us -> päivädata.
-    """
     i_map = {"1d": "d", "1wk": "w"}
     ii = i_map.get(interval, "d")
     url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i={ii}"
-
     for attempt in range(1, attempts + 1):
         throttle(1.0)
         resp = SESSION.get(url, timeout=15)
@@ -271,7 +251,75 @@ def try_fetch_stooq_csv(stooq_symbol: str, interval: str, attempts: int = 2):
         backoff_sleep(attempt=attempt, base=0.6, cap=4.0)
     return None
 
-# ---------------- Pää-haku: Yahoo CSV -> Stooq CSV ----------------
+# ---------------- Twelve Data helperit ----------------
+def to_twelvedata_symbols(ticker: str) -> list[str]:
+    """
+    Twelve Data tukee suoraan 'NOKIA.HE', 'ELISA.HE', jne.
+    Lisäksi kokeile yleisiä ADR/US-varianteja.
+    """
+    t = ticker.upper().strip()
+    out = [t]
+    base = t.split(".")[0]
+    TD_MAP = {
+        "NOKIA.HE": ["NOKIA.HE","NOK"],  # suora HE + ADR
+        "NOKIA":    ["NOKIA.HE","NOK"],
+        "NOK":      ["NOK"],
+        "ELISA.HE": ["ELISA.HE","ELMUF","ELMAY"],
+        "SAMPO.HE": ["SAMPO.HE","SAXPY"],
+        "AAPL":     ["AAPL"],
+        "MSFT":     ["MSFT"],
+        "AMZN":     ["AMZN"],
+        "SPY":      ["SPY"],
+        "ADS.DE":   ["ADS.DE","ADDYY"],
+    }
+    if t in TD_MAP:
+        out = TD_MAP[t] + out
+    # poista duplikaatit
+    seen, uniq = set(), []
+    for s in out:
+        if s and s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    return uniq
+
+def try_fetch_twelvedata(sym: str, years: int, interval: str, apikey: str):
+    """
+    Twelve Data: https://api.twelvedata.com/time_series
+    interval: 1day / 1week
+    outputsize: riittävän iso, jotta kattaa vuosia
+    """
+    int_map = {"1d": "1day", "1wk": "1week"}
+    itv = int_map.get(interval, "1day")
+    outputsize = 5000  # maksimoi historian
+    url = (
+        "https://api.twelvedata.com/time_series"
+        f"?symbol={quote_plus(sym)}"
+        f"&interval={itv}"
+        f"&outputsize={outputsize}"
+        "&order=ASC"
+        f"&apikey={quote_plus(apikey)}"
+    )
+    throttle(1.0)
+    resp = SESSION.get(url, timeout=20)
+    if not resp.ok:
+        return None
+    js = resp.json()
+    if "values" not in js:
+        return None
+    df = pd.DataFrame(js["values"])
+    if df.empty or "datetime" not in df.columns or "close" not in df.columns:
+        return None
+    df["Date"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df["Close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["Date","Close"]).set_index("Date").sort_index()
+    # rajaa haluttuun vuosimäärään
+    cutoff = df.index.max() - pd.DateOffset(years=years)
+    df = df.loc[df.index >= cutoff]
+    # kopioi Close myös Adj Close -kolumniksi yhteensopivuuden vuoksi
+    df["Adj Close"] = df["Close"]
+    return df
+
+# ---------------- Pää-haku: Yahoo CSV -> Stooq -> Twelve Data ----------------
 @st.cache_data(ttl=600)
 def fetch_series(sym: str, years: int):
     debug_lines = []
@@ -305,6 +353,22 @@ def fetch_series(sym: str, years: int):
                     if not s.empty:
                         return s, f"{cand} (via {stq})", debug_lines
 
+    # 3) Twelve Data (API KEY vaaditaan)
+    td_key = st.secrets.get("TWELVEDATA_API_KEY")
+    if td_key:
+        for cand in candidates:
+            td_syms = to_twelvedata_symbols(cand)
+            for sym2 in td_syms:
+                for itv in intervals:
+                    debug_lines.append(f"{cand} [{itv}] (Twelve Data: {sym2})")
+                    td_df = try_fetch_twelvedata(sym2, years, itv, td_key)
+                    if td_df is not None and not td_df.empty:
+                        s = series_from_ohlc_df(td_df)
+                        if not s.empty:
+                            return s, f"{cand} (via TwelveData:{sym2})", debug_lines
+    else:
+        debug_lines.append("Twelve Data API key puuttuu: lisää TWELVEDATA_API_KEY secretsiin.")
+
     return pd.Series(dtype=float), None, debug_lines
 
 # ---------------- Laskenta & Piirto ----------------
@@ -322,8 +386,7 @@ if st.button("Näytä kuvaaja", type="primary"):
         st.warning(
             "Yksikään lähde ei palauttanut dataa: **{}**.\n\n"
             "Yritetyt yhdistelmät:\n- {}\n\n"
-            "Vinkit: kokeile vastaavaa US/ADR -tunnusta (esim. **NOK** / **nok.us**), "
-            "tai jokin toinen listaus samalle yhtiölle."
+            "Vinkit: lisää Twelve Data API -avain (Settings → Secrets), tai kokeile US/ADR-tickeriä."
             .format(symbol, "\n- ".join(tried))
         )
         st.stop()
